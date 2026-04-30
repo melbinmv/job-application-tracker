@@ -1,0 +1,8 @@
+# .gitignore
+credentials.json
+token.pickle
+job_applications.xlsx
+venv/
+__pycache__/
+*.pyc
+main.py
