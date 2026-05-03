@@ -7,3 +7,6 @@ __pycache__/
 *.pyc
 main.py
 ~$*
+debug_tracker.py
+job_sync.py
+email_debug_report.csv
