@@ -17,6 +17,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 EXCEL_FILE       = "job_applications.xlsx"
 SHEET_NAME       = "Applications"
+REVIEW_SHEET     = "Needs Review"
 TOKEN_FILE       = "token.pickle"
 CREDENTIALS_FILE = "credentials.json"
 SCOPES           = ["https://www.googleapis.com/auth/gmail.readonly"]
@@ -251,7 +252,35 @@ def ensure_workbook() -> Workbook:
         ws.title = SHEET_NAME
         _apply_headers(ws)
         ws.freeze_panes = "A2"
+
+    if REVIEW_SHEET not in wb.sheetnames:
+        rv = wb.create_sheet(REVIEW_SHEET)
+        rv.append(["Date", "Sender", "Subject", "Body", "Extracted Company", "Extracted Job Role"])
+        for col, cell in enumerate(rv[1], 1):
+            _header_style(cell)
+            rv.column_dimensions[cell.column_letter].width = [18, 30, 40, 80, 25, 25][col - 1]
+        rv.freeze_panes = "A2"
+
     return wb
+
+
+def append_review_row(ws, email: dict, entry: dict):
+    ws.append([
+        entry["date"],
+        email.get("sender", ""),
+        email.get("subject", ""),
+        email.get("body", "")[:2000],
+        entry["company"],
+        entry["job_role"],
+    ])
+    r    = ws.max_row
+    fill = PatternFill("solid", start_color="FFF3CD" if r % 2 == 0 else "FFFDE7")
+    for col in range(1, 7):
+        cell = ws.cell(row=r, column=col)
+        cell.fill      = fill
+        cell.font      = Font(name="Arial", size=10)
+        cell.alignment = Alignment(vertical="center", wrap_text=True if col == 4 else False)
+    ws.row_dimensions[r].height = 60
 
 
 def load_existing_rows(wb: Workbook) -> dict:
@@ -314,9 +343,10 @@ def main():
     ws            = wb[SHEET_NAME]
     existing_rows = load_existing_rows(wb)
 
-    added   = 0
-    updated = 0
-    skipped = 0
+    added    = 0
+    updated  = 0
+    skipped  = 0
+    reviewed = 0
 
     total_batches = (len(email_data) + BATCH_SIZE - 1) // BATCH_SIZE
     print(f"\n🤖 Sending to Gemini in {total_batches} batches of {BATCH_SIZE}...\n")
@@ -333,6 +363,7 @@ def main():
         print(f"   Batch {batch_num + 1}/{total_batches} ({len(batch_emails)} emails)...")
         results = call_gemini_batch(batch_emails)
 
+        rv = wb[REVIEW_SHEET]
         for email, result in zip(batch_emails, results):
             entry = {
                 "date":     email["date"],
@@ -341,9 +372,22 @@ def main():
                 "status":   result["status"],
             }
 
-            company_key = entry["company"].strip().lower()
+            company  = entry["company"].strip()
+            job_role = entry["job_role"].strip()
+            needs_review = (
+                company.lower() in ("unknown", "", "n/a") or
+                job_role.lower() in ("n/a", "", "unknown")
+            )
+
+            if needs_review:
+                append_review_row(rv, email, entry)
+                reviewed += 1
+                print(f"      📋 Needs review: {company} — {job_role}")
+                continue
+
+            company_key = company.lower()
             status_icon = "❌" if entry["status"] == "Rejected" else "✅"
-            print(f"      {status_icon} {entry['company']} — {entry['job_role']} [{entry['status']}]")
+            print(f"      {status_icon} {company} — {job_role} [{entry['status']}]")
 
             if company_key in existing_rows:
                 row_num    = existing_rows[company_key]
@@ -367,6 +411,7 @@ def main():
     print(f"   ✅ Added:          {added}")
     print(f"   🔄 Updated:        {updated}")
     print(f"   ⏭  Skipped:        {skipped}")
+    print(f"   📋 Needs review:   {reviewed} (see '{REVIEW_SHEET}' sheet)")
     print(f"   🤖 Gemini calls:   {total_batches} (batched from {len(messages)} emails)")
     print(f"   📁 Saved to: {os.path.abspath(EXCEL_FILE)}")
 
